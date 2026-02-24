@@ -3,7 +3,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import Optional
-import json
+from pydantic import BaseModel
+
 import os
 from datetime import datetime
 from apscheduler.schedulers.background import BackgroundScheduler
