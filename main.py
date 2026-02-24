@@ -39,11 +39,14 @@ os.makedirs(CODES_DIR, exist_ok=True)
 # ─────────────────────────────────────────────
 
 class GenerateRequest(BaseModel):
-    country:       Optional[str]   = 'ng'
-    max_selections: Optional[int]  = 5
-    min_odds:      Optional[float] = 1.30
-    max_odds:      Optional[float] = 5.00
-    mode:          Optional[str]   = 'favourite'
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+    country: Optional[str] = 'ng'
+    max_selections: Optional[int] = 5
+    min_odds: Optional[float] = 1.30
+    max_odds: Optional[float] = 5.00
+    mode: Optional[str] = 'favourite'
+
+
 
 
 # ─────────────────────────────────────────────
