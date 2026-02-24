@@ -3,7 +3,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import Optional
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
+
 
 import os
 from datetime import datetime
