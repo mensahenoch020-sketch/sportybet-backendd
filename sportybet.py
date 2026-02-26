@@ -1,230 +1,232 @@
-import requests
-import json
-import time
 import os
+import time
+import random
 from datetime import datetime
+from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
 
 # ─────────────────────────────────────────────
-#  CONFIGURATION
+
+# CONFIGURATION
+
 # ─────────────────────────────────────────────
 
-COUNTRY        = os.getenv('SPORTYBET_COUNTRY', 'ng')
-SPORT_ID       = 'sr:sport:1'
-MAX_SELECTIONS = int(os.getenv('MAX_SELECTIONS', '5'))
-MIN_ODDS       = float(os.getenv('MIN_ODDS', '1.30'))
-MAX_ODDS       = float(os.getenv('MAX_ODDS', '5.00'))
-MARKET_NAME    = '1X2'
-SELECTION_MODE = os.getenv('SELECTION_MODE', 'favourite')
+COUNTRY        = os.getenv(‘SPORTYBET_COUNTRY’, ‘ng’)
+MAX_SELECTIONS = int(os.getenv(‘MAX_SELECTIONS’, ‘5’))
+MIN_ODDS       = float(os.getenv(‘MIN_ODDS’, ‘1.30’))
+MAX_ODDS       = float(os.getenv(‘MAX_ODDS’, ‘5.00’))
+SELECTION_MODE = os.getenv(‘SELECTION_MODE’, ‘favourite’)
 
-# Webshare proxy config — fill in after signing up at webshare.io
-PROXY_USER     = os.getenv('PROXY_USER', '')
-PROXY_PASS     = os.getenv('PROXY_PASS', '')
-PROXY_HOST     = os.getenv('PROXY_HOST', 'p.webshare.io')
-PROXY_PORT     = os.getenv('PROXY_PORT', '80')
-
-BASE_URL = 'https://www.sportybet.com/api/' + COUNTRY
-
-HEADERS = {
-    'Content-Type': 'application/json',
-    'Accept': 'application/json, text/plain, */*',
-    'Origin': 'https://www.sportybet.com',
-    'Referer': 'https://www.sportybet.com/' + COUNTRY + '/',
-    'User-Agent': 'Mozilla/5.0 (Linux; Android 11; SM-G991B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
+COUNTRY_URLS = {
+‘ng’: ‘https://www.sportybet.com/ng’,
+‘gh’: ‘https://www.sportybet.com/gh’,
+‘ke’: ‘https://www.sportybet.com/ke’,
+‘tz’: ‘https://www.sportybet.com/tz’,
+‘ug’: ‘https://www.sportybet.com/ug’,
+‘zm’: ‘https://www.sportybet.com/zm’,
 }
 
-
-def get_proxies():
-    if PROXY_USER and PROXY_PASS:
-        proxy_url = 'http://' + PROXY_USER + ':' + PROXY_PASS + '@' + PROXY_HOST + ':' + PROXY_PORT
-        return {'http': proxy_url, 'https': proxy_url}
-    return None
-
-
-def fetch_json(url, method='GET', payload=None, retries=3):
-    proxies = get_proxies()
-    for attempt in range(1, retries + 1):
-        try:
-            if method == 'POST':
-                r = requests.post(url, headers=HEADERS, json=payload, proxies=proxies, timeout=15)
-            else:
-                r = requests.get(url, headers=HEADERS, proxies=proxies, timeout=15)
-            r.raise_for_status()
-            return r.json()
-        except requests.exceptions.HTTPError as e:
-            print('HTTP Error [' + str(attempt) + '/' + str(retries) + ']: ' + str(e))
-            if r.status_code == 403:
-                print('403 Forbidden — SportyBet is blocking this IP. Add proxy credentials in .env')
-                break
-        except requests.exceptions.ConnectionError:
-            print('Connection error [' + str(attempt) + '/' + str(retries) + ']. Retrying...')
-        except requests.exceptions.Timeout:
-            print('Timeout [' + str(attempt) + '/' + str(retries) + ']. Retrying...')
-        except Exception as e:
-            print('Unexpected error: ' + str(e))
-            break
-        time.sleep(2 ** attempt)
-    return None
-
-
-def fetch_events(country=None):
-    base = 'https://www.sportybet.com/api/' + (country or COUNTRY)
-    endpoints = [
-        base + '/factsCenter/sports/' + SPORT_ID + '/highlights?pageSize=50&pageNum=1',
-        base + '/factsCenter/sports/' + SPORT_ID + '/tournaments?pageSize=20&pageNum=1',
-    ]
-    for url in endpoints:
-        data = fetch_json(url)
-        if data:
-            events = (
-                data.get('data', {}).get('events') or
-                data.get('bizData', {}).get('events') or
-                data.get('data', []) or
-                []
-            )
-            if events:
-                return events
-    return []
-
-
-def extract_selections(events, max_sel=None, min_odds=None, max_odds=None, mode=None):
-    max_sel   = max_sel  or MAX_SELECTIONS
-    min_odds  = min_odds or MIN_ODDS
-    max_odds  = max_odds or MAX_ODDS
-    mode      = mode     or SELECTION_MODE
-    selections = []
-
-    for event in events:
-        if len(selections) >= max_sel:
-            break
-
-        event_id = event.get('eventId') or event.get('id')
-        if not event_id:
-            continue
-
-        markets = event.get('markets') or event.get('betMarkets') or []
-
-        for market in markets:
-            market_name = market.get('name', '')
-            if MARKET_NAME.upper() not in market_name.upper():
-                continue
-
-            market_id = market.get('id') or market.get('marketId')
-            outcomes  = market.get('outcomes') or market.get('selections') or []
-
-            valid = [
-                o for o in outcomes
-                if min_odds <= float(o.get('odds', 0) or o.get('price', 0)) <= max_odds
-            ]
-
-            if not valid:
-                continue
-
-            if mode == 'favourite':
-                chosen = min(valid, key=lambda o: float(o.get('odds', 0) or o.get('price', 0)))
-            elif mode == 'home':
-                chosen = next((o for o in valid if o.get('name', '').lower() in ['1', 'home']), valid[0])
-            else:
-                import random
-                chosen = random.choice(valid)
-
-            outcome_id   = chosen.get('id') or chosen.get('outcomeId')
-            outcome_name = chosen.get('name', '?')
-            odds_val     = float(chosen.get('odds', 0) or chosen.get('price', 0))
-            home_team    = event.get('homeTeamName') or event.get('home', {}).get('name', 'Home')
-            away_team    = event.get('awayTeamName') or event.get('away', {}).get('name', 'Away')
-
-            selections.append({
-                'eventId':    event_id,
-                'marketId':   market_id,
-                'outcomeId':  str(outcome_id),
-                'specifiers': '',
-                'odds':       odds_val,
-                'match':      str(home_team) + ' vs ' + str(away_team),
-                'pick':       outcome_name,
-            })
-            break
-
-    return selections
-
-
-def generate_code(selections, country=None):
-    if not selections:
-        return None
-
-    country = country or COUNTRY
-    base    = 'https://www.sportybet.com/api/' + country
-
-    api_selections = [
-        {
-            'eventId':    s['eventId'],
-            'marketId':   s['marketId'],
-            'outcomeId':  s['outcomeId'],
-            'specifiers': s['specifiers'],
-            'odds':       s['odds'],
-        }
-        for s in selections
-    ]
-
-    payload   = {'selections': api_selections}
-    endpoints = [
-        base + '/orders/share',
-        base + '/betslip/share',
-        base + '/slip/share',
-    ]
-
-    for url in endpoints:
-        data = fetch_json(url, method='POST', payload=payload)
-        if data:
-            share_code = (
-                data.get('shareCode') or
-                data.get('data', {}).get('shareCode') or
-                data.get('bizData', {}).get('shareCode') or
-                data.get('code')
-            )
-            if share_code:
-                return {
-                    'shareCode': share_code,
-                    'deepLink':  'https://www.sportybet.com/' + country + '/?shareCode=' + share_code,
-                }
-
-    return None
-
-
-def load_code(share_code, country=None):
-    country = country or COUNTRY
-    base    = 'https://www.sportybet.com/api/' + country
-    endpoints = [
-        base + '/orders/share/' + share_code,
-        base + '/betslip/share/' + share_code,
-    ]
-    for url in endpoints:
-        data = fetch_json(url)
-        if data:
-            return data
-    return None
-
+def log(msg):
+print(f”[{datetime.now().strftime(’%H:%M:%S’)}] {msg}”, flush=True)
 
 def run_full_generation(country=None, max_sel=None, min_odds=None, max_odds=None, mode=None):
-    country = country or COUNTRY
-    print('[' + datetime.now().strftime('%H:%M:%S') + '] Starting generation for ' + country.upper())
+country   = country  or COUNTRY
+max_sel   = max_sel  or MAX_SELECTIONS
+min_odds  = min_odds or MIN_ODDS
+max_odds  = max_odds or MAX_ODDS
+mode      = mode     or SELECTION_MODE
 
-    events = fetch_events(country)
-    if not events:
-        return {'error': 'Could not fetch events. SportyBet may be blocking this IP. Add proxy credentials.'}
+```
+base_url = COUNTRY_URLS.get(country, COUNTRY_URLS['ng'])
+log(f"Starting Playwright session for {country.upper()}")
 
-    selections = extract_selections(events, max_sel, min_odds, max_odds, mode)
-    if not selections:
-        return {'error': 'No valid selections found with current odds filters.'}
+with sync_playwright() as p:
+    browser = p.chromium.launch(
+        headless=True,
+        args=[
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-dev-shm-usage',
+            '--disable-gpu',
+            '--no-first-run',
+            '--no-zygote',
+            '--single-process',
+        ]
+    )
 
-    result = generate_code(selections, country)
-    if not result:
-        return {'error': 'Could not generate booking code. API endpoint may have changed.'}
+    context = browser.new_context(
+        user_agent='Mozilla/5.0 (Linux; Android 12; SM-G991B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
+        viewport={'width': 390, 'height': 844},
+        locale='en-GB',
+    )
 
-    return {
-        'success':     True,
-        'shareCode':   result['shareCode'],
-        'deepLink':    result['deepLink'],
-        'country':     country.upper(),
-        'selections':  selections,
-        'generatedAt': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-    }
+    page = context.new_page()
+
+    try:
+        # Step 1: Go to football highlights
+        highlights_url = f"{base_url}/m/football/highlights"
+        log(f"Navigating to {highlights_url}")
+        page.goto(highlights_url, wait_until='domcontentloaded', timeout=30000)
+        time.sleep(3)
+
+        # Dismiss popups
+        for selector in ['button:has-text("Accept")', 'button:has-text("OK")', '.close-btn']:
+            try:
+                btn = page.locator(selector).first
+                if btn.is_visible(timeout=2000):
+                    btn.click()
+                    time.sleep(1)
+            except:
+                pass
+
+        # Step 2: Collect and click odds
+        log("Scanning for matches...")
+        selections = []
+        added_matches = []
+
+        odds_rows = page.locator('[class*="event-item"], [class*="match-item"], [class*="game-item"]')
+        row_count = odds_rows.count()
+        log(f"Found {row_count} match rows")
+
+        clicked = 0
+        attempted_rows = 0
+
+        while clicked < max_sel and attempted_rows < min(row_count, 30):
+            try:
+                row = odds_rows.nth(attempted_rows)
+                attempted_rows += 1
+
+                try:
+                    match_name = row.locator('[class*="team"], [class*="name"]').first.inner_text(timeout=2000)
+                except:
+                    match_name = f"Match {attempted_rows}"
+
+                btns = row.locator('button, [class*="odds"], [class*="odd"]')
+                btn_count = btns.count()
+                if btn_count == 0:
+                    continue
+
+                valid_btns = []
+                for i in range(btn_count):
+                    try:
+                        btn = btns.nth(i)
+                        text = btn.inner_text(timeout=1000).strip()
+                        odds_val = float(text)
+                        if min_odds <= odds_val <= max_odds:
+                            valid_btns.append((i, odds_val, btn))
+                    except:
+                        continue
+
+                if not valid_btns:
+                    continue
+
+                if mode == 'favourite':
+                    chosen = min(valid_btns, key=lambda x: x[1])
+                elif mode == 'random':
+                    chosen = random.choice(valid_btns)
+                else:
+                    chosen = valid_btns[0]
+
+                chosen[2].click()
+                time.sleep(0.8)
+                clicked += 1
+                added_matches.append({
+                    'match': match_name.strip(),
+                    'odds': chosen[1],
+                    'pick': ['1', 'X', '2'][chosen[0]] if chosen[0] < 3 else '?'
+                })
+                log(f"Added: {match_name} @ {chosen[1]}")
+
+            except Exception as e:
+                log(f"Row {attempted_rows} error: {e}")
+                continue
+
+        if clicked == 0:
+            browser.close()
+            return {'error': 'Could not add any selections. SportyBet page structure may have changed.'}
+
+        log(f"Added {clicked} selections. Looking for share button...")
+        time.sleep(2)
+
+        # Step 3: Click Share button
+        share_selectors = [
+            'button:has-text("Share")',
+            'button:has-text("Book")',
+            'button:has-text("Code")',
+            '[class*="share"]',
+            '[class*="book-code"]',
+            '[class*="booking"]',
+        ]
+
+        for sel in share_selectors:
+            try:
+                btn = page.locator(sel).first
+                if btn.is_visible(timeout=3000):
+                    btn.click()
+                    log(f"Clicked: {sel}")
+                    time.sleep(3)
+                    break
+            except:
+                continue
+
+        # Step 4: Extract the booking code
+        share_code = None
+
+        current_url = page.url
+        if 'shareCode=' in current_url or 'code=' in current_url:
+            from urllib.parse import urlparse, parse_qs
+            params = parse_qs(urlparse(current_url).query)
+            share_code = params.get('shareCode', params.get('code', [None]))[0]
+
+        if not share_code:
+            for sel in ['[class*="share-code"]', '[class*="booking-code"]', 'input[readonly]', '[class*="code"] span']:
+                try:
+                    el = page.locator(sel).first
+                    if el.is_visible(timeout=2000):
+                        text = el.inner_text(timeout=2000).strip()
+                        if text and 3 < len(text) < 30:
+                            share_code = text
+                            break
+                except:
+                    continue
+
+        if not share_code:
+            try:
+                for i in range(page.locator('input').count()):
+                    val = page.locator('input').nth(i).get_attribute('value', timeout=1000)
+                    if val and 4 <= len(val) <= 20:
+                        share_code = val
+                        break
+            except:
+                pass
+
+        browser.close()
+
+        if not share_code:
+            return {
+                'error': 'Selections added but could not extract booking code. Try again.',
+                'partial': {'selections': added_matches, 'count': clicked}
+            }
+
+        return {
+            'success':     True,
+            'shareCode':   share_code,
+            'deepLink':    f"https://www.sportybet.com/{country}/?shareCode={share_code}",
+            'country':     country.upper(),
+            'selections':  added_matches,
+            'generatedAt': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        }
+
+    except PlaywrightTimeout:
+        browser.close()
+        return {'error': 'Page timed out. Try again.'}
+    except Exception as e:
+        browser.close()
+        return {'error': f'Error: {str(e)}'}
+```
+
+def load_code(share_code, country=None):
+country = country or COUNTRY
+return {
+‘shareCode’: share_code,
+‘deepLink’: f”https://www.sportybet.com/{country}/?shareCode={share_code}”
+}
