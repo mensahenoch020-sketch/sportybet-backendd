@@ -1,2 +1,0 @@
-# sportybet-backendd
-Backendd
